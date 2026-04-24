@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.2
+    container_name: atare_redpanda
+    command:
+      - redpanda
+      - start
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+    ports:
+      - "9092:9092"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - atare_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: atare_redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    networks:
+      - atare_network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: atare_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3.5G # Enough for Phi-3-Mini or Qwen2.5-1.5B
+    networks:
+      - atare_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  telemetry_generator:
+    build:
+      context: ./telemetry_generator
+    container_name: atare_telemetry
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+    networks:
+      - atare_network
+
+  stream_processor:
+    build:
+      context: ./stream_processor
+    container_name: atare_processor
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./shared_data:/shared_data
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    networks:
+      - atare_network
+
+  agentic_engine:
+    build:
+      context: ./agentic_engine
+    container_name: atare_agent
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./shared_data:/shared_data
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    networks:
+      - atare_network
+
+networks:
+  atare_network:
+    driver: bridge
+
+volumes:
+  ollama_data:
